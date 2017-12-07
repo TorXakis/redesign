@@ -18,6 +18,9 @@ A new feature should be:
   greater than 5 minutes (taking our fastest
   CI, [Semaphore](http://semaphoreci.com/)). If it takes more, please provide a
   description of why this is needed.
+- [ ] Adhering to our [code style](#code-style). There is an [automatic
+  pretty printer](https://github.com/commercialhaskell/hindent) that can be
+  used to format the code.
 
 ## Integration and unit tests
 
