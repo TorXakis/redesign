@@ -1,8 +1,13 @@
 # How to contribute
 
+Thank you for taking the time to contribute to `TorXakis`. We value your
+effort, and to make sure that it remains a quality tool that can be extended
+and maintained by the community we require that certain requirements are
+satisfied before incorporating your changes.
+
 ## Adding new features
 
-A new feature should be:
+When adding a new feature, please make sure that it is:
 
 - [ ] Properly documented: whenever applicable, there should be a description
   of the syntax and semantics of the new feature (in the form of SOS rules for
