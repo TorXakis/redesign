@@ -10,11 +10,13 @@
 -----------------------------------------------------------------------------
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 module Test.TorXakis.Core where
 
 -- Standard library imports
 import Data.Map (Map)
-
+import Data.Text (Text)
+    
 -- Related third party imports
 
 -- Local application/library specific imports
@@ -26,55 +28,54 @@ data BExpr
 data ModelDef
 
 -- | Process definitions.
-data ProcDef = ProcDef BExpr
+newtype ProcDef = ProcDef BExpr
 
 -- | Complete TorXakis specifications.
 data TxsSpec = TxsSpec
-    { procDefs :: Map (Id ProcDef) ProcDef
-    , modelDefs :: Map (Id ModelDef) ModelDef
+    { procDefs :: !(Map (Id ProcDef) ProcDef)
+    , modelDefs :: !(Map (Id ModelDef) ModelDef)
     }
 
 -- | Identifiers for parts of the TorXakis specifications.
 newtype Id v = Id { getId :: Int }
 
 -- | Actions
-data Action
+newtype Action = Action { actionName :: Text }
 
 -- | Connection to the external world.
-class WorldConnection c where
-    data M c
+class Monad m => WorldConnection c m where
     -- | Start the external world. It might include the starting the SUT.
-    start :: c -> M ()
+    start :: c -> m ()
     -- | Receive an action from the external world.
-    fromWorld :: c -> M Action
+    fromWorld :: c -> m Action
     -- | Send an action to the external world.
-    toWorld :: c -> Action -> M ()
+    toWorld :: c -> Action -> m ()
     -- | Stop the external world.
-    stop :: c -> M ()
+    stop :: c -> m ()
 
 -- | Core monad.
-data IOC m
+data IOC m = IOC m
 
-initTest :: WorldConnection c => TxsSpec -> c -> IOC (TestEnv c)
-initTest = undefined
+initTest :: WorldConnection c m => c -> TxsSpec -> IOC (TestEnv c m)
+initTest c spec = IOC (TestEnv c spec)
 
 -- | Test environment.
 --
 -- NOTE: by using different kind of environments we remove the need for making
 -- a case analysis of in which state the TorXakis core is.
-data TestEnv c where
-    TestEnv :: WorldConnection c => c -> TxsSpec -> TestEnv c
+data TestEnv c m where
+    TestEnv :: WorldConnection c m => c -> TxsSpec -> TestEnv c m
 
 -- | Stepper environment.
 --
 -- A stepper does need a connection with the outside world.
-data StepEnv = StepEnv TxsSpec
+newtype StepEnv = StepEnv TxsSpec
 
 -- No SUT connection required here.
 initStep :: TxsSpec -> IOC StepEnv
 initStep = undefined
 
-test :: TestEnv c -> IOC TestHandle
+test :: TestEnv c m -> IOC TestHandle
 test = undefined
 
 step :: StepEnv  -> IOC StepHandle
