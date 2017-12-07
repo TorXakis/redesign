@@ -35,6 +35,13 @@ In Haskell’s case, this unit of code would be a function that is simple enough
 _Integration Tests_ are big brothers of Unit Tests:
 They are written and run the same way, but they cover a **multitude of units or functionalities** within the package.
 
+Typically a feature development tast would require _multiple unit tests_ and _at least one integration test_ to be added or changed.
+
+Make sure that you update the tests as necessary and run the full test suite successfully before submitting your change request.
+Overall code coverage should not decrease with your contribution.
+
+**Change or removal of a test should always be justified by either test being wrong or a behaviour/requirement being changed.**
+
 ## Coding style
 
 We
