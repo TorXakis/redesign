@@ -27,9 +27,13 @@ When adding a new feature, please make sure that it is:
   pretty printer](https://github.com/commercialhaskell/hindent) that can be
   used to format the code.
 
-## Integration and unit tests
+## Unit and Integration tests
 
-TODO: put Kerem's description here.
+_Unit Tests_ are used for testing the **smallest possible meaningfully-functional** unit of code.
+In Haskell’s case, this unit of code would be a function that is simple enough to handle only a small part of a functionality.
+
+_Integration Tests_ are big brothers of Unit Tests:
+They are written and run the same way, but they cover a **multitude of units or functionalities** within the package.
 
 ## Coding style
 
