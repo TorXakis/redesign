@@ -134,8 +134,8 @@ data TesterHandle c b r = TesterHandle
 newtype StepEnv = StepEnv TxsSpec
 
 -- No SUT connection required here.
-initStep :: TxsSpec -> IO StepEnv
-initStep = undefined
+-- initStep :: TxsSpec -> IO StepEnv
+-- initStep = 
 
 -- | Number of steps to make.
 data StepsNumber = All | Do Int
@@ -211,8 +211,8 @@ suspendTest TestEnv {active} = atomically $ writeTVar active False
 
 
 -- | Stop the test. Pending test steps are interrupted.
-stopTest :: TesterHandle c b r -> IO ()
-stopTest TesterHandle {} = undefined  -- Terminate c, b, and r. Perform the cleanup here.
+-- stopTest :: TesterHandle c b r -> IO ()
+-- stopTest TesterHandle {} =   -- Terminate c, b, and r. Perform the cleanup here.
     
 -- | Resume the test.
-resumeTest = undefined
+-- resumeTest = undefined
