@@ -9,6 +9,7 @@
 -- Portability :  portable
 -----------------------------------------------------------------------------
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 module Test.TorXakis.Core where
@@ -17,7 +18,8 @@ module Test.TorXakis.Core where
 import Control.Monad.IO.Class
 import Control.Concurrent.Async
 import Control.Monad.Extra
-
+import Control.Concurrent.STM
+    
 -- Related third party imports
 import Pipes hiding (next)
     
@@ -27,27 +29,27 @@ import Test.TorXakis.Specification
 -- | Connection to the external world.
 class WorldConnection c where
     -- | Start the external world. It might include the starting the SUT.
-    initConnection :: c -> IOC ()
+    initConnection :: c -> IO ()
 
     -- | Receive an action from the external world. This action is blocking.
-    fromWorld :: c -> IOC Action
+    fromWorld :: c -> IO Action
 
     -- | Send an action to the external world.
-    toWorld :: c -> Action -> IOC ()
+    toWorld :: c -> Action -> IO ()
 
     -- | Stop the external world.
-    stop :: c -> IOC ()
+    stop :: c -> IO ()
 
 -- | Reports the actions that occur during testing.
 class Reporter r where
     -- | Initialize the reporter
-    initReporter :: IOC r
+    initReporter :: r -> IO ()
 
     -- | Report an action.
-    report :: r -> Observation -> IOC ()
+    report :: r -> Observation -> IO ()
 
     -- ^ Stream of test output.
-    output :: r -> ListT IOC Observation
+    output :: r -> ListT IO Observation
 
 -- | Output that can be observed from in the testing process.
 data Observation
@@ -60,17 +62,17 @@ data Observation
 -- | Keeps track of the current state of the specification.
 class Bookkeeper b where
     -- | Initialize the bookkeeper.
-    initBookeeper :: TxsSpec -> IOC b
+    initBookeeper :: b -> TxsSpec -> IO ()
     
     -- | Returns the next action according to the specification.
-    nextAction :: b -> IOC Action
+    nextAction :: b -> IO Action
 
     -- | Performs the given action, updating the specification accordingly.
     -- 
     -- The returned value is True iff the current action is allowed in the
     -- specification.
     --
-    step :: b -> Action -> IOC Verdict
+    step :: b -> Action -> IO Verdict
 
 data Verdict
     = Pass
@@ -79,38 +81,52 @@ data Verdict
                    -- have a verdict.
     deriving (Show)
 
--- | Core monad.
-newtype IOC a = IOC { runIOC :: IO a }
-    deriving (Functor, Applicative, Monad, MonadIO)
-
 initTest :: (WorldConnection c, Bookkeeper b, Reporter r)
-         => c -> b -> r -> TxsSpec -> IOC (TestEnv c b r )
+         => c -> b -> r -> TxsSpec -> IO (TesterHandle c b r)
 -- TODO: you might need to initialize the data structures here.
-initTest c b r spec = IOC (return $ TestEnv c b r TestParams TesterHandle)
+initTest c b r spec = do
+    initConnection c
+    initBookeeper b spec
+    initReporter r
+    -- Initially the test process is not active:
+    activeTV <- newTVarIO False
+    cmdsQ <- newTQueueIO
+    let env = TestEnv activeTV cmdsQ c b r TestParams
+    tProc <- async $ cmdsHandler env cmdsQ
+    let handle = TesterHandle tProc env
+    return handle
+  where
+    -- TODO: consider handling asynchronous exceptions
+    cmdsHandler env cmdsQ = forever $ do
+        cmd <- atomically $ readTQueue cmdsQ
+        case cmd of
+            CmdTest sn -> testLoop sn env -- Note that the handler won't start
+                                          -- a new loop till the current
+                                          -- command is handled. (It doesn't
+                                          -- make sense to test concurrently).
+
 
 -- | Test environment.
 --
 -- NOTE: by using different kind of environments we remove the need for making
 -- a case analysis of in which state the TorXakis core is.
 data TestEnv c b r where
+     -- TODO: consider using existential quantifications over GADT's.
     TestEnv :: (WorldConnection c, Bookkeeper b, Reporter r)
-        => c -> b -> r -> TestParams -> TesterHandle -> TestEnv c b r 
+            => { active :: TVar Bool    -- ^ Is the tester active.
+               , cmds :: TQueue Cmd     -- ^ Commands sent to the tester process.
+               , connection :: c
+               , bookkeeper :: b 
+               , reporter :: r
+               , params :: TestParams
+               } -> TestEnv c b r
 
-data TesterHandle = TesterHandle
+newtype Cmd = CmdTest StepsNumber
 
-doTest :: TesterHandle -> StepsNumber -> IOC ()
-doTest = undefined
-
-doStop :: TesterHandle -> IOC ()
-doStop = undefined
-
-testConn :: TestEnv c b r -> c
-testConn (TestEnv c _ _ _ _) = c
-
-testReporter :: TestEnv c b r -> r
-testReporter (TestEnv _ _ r _ _) = r
-
--- | A handle to a running test. 
+data TesterHandle c b r = TesterHandle
+    { testerProc :: Async () -- ^ Tester process
+    , testEnv :: TestEnv c b r
+    }
 
 -- | Stepper environment.
 --
@@ -118,51 +134,56 @@ testReporter (TestEnv _ _ r _ _) = r
 newtype StepEnv = StepEnv TxsSpec
 
 -- No SUT connection required here.
-initStep :: TxsSpec -> IOC StepEnv
+initStep :: TxsSpec -> IO StepEnv
 initStep = undefined
 
 -- | Number of steps to make.
 data StepsNumber = All | Do Int
 
+decrement :: StepsNumber -> StepsNumber
+decrement All = All
+decrement (Do n) = Do (n - 1)
+
 -- | Start testing: test case generation + conformance checking.
-test :: StepsNumber -> TestEnv c b r -> IOC ()
-test n (TestEnv _ _ _ _ h) =
-    doTest h n  -- This will queue the command using the handler.
+test :: StepsNumber -> TestEnv c b r -> IO ()
+test sn TestEnv {cmds} = atomically $ writeTQueue cmds (CmdTest sn)
 
 -- | Was a verdict already reached?
-testDone :: TestEnv c b r -> IOC Bool
+testDone :: TestEnv c b r -> IO Bool
 testDone = undefined
 
--- | Is the test still active (not suspended?).
-testActive :: TestEnv c b r -> IOC Bool
-testActive = undefined
+-- | Is the test still active? (active == not suspended).
+testActive :: TestEnv c b r -> IO Bool
+testActive TestEnv {active} = atomically $ readTVar active
     
--- Test look will be called by the main tester loop
+-- Test look will be called by the main tester loop.
 testLoop :: WorldConnection c
-         => StepsNumber -> TestEnv c b r -> IOC ()    
-testLoop All env = do
-    done <- testDone env -- The testing process is finished.
-    whenM (testActive env) (testStep env >> test All env)
-testLoop _ _ = undefined
+         => StepsNumber -> TestEnv c b r -> IO ()
+testLoop n env = do
+    whenM (notM (testDone env) &&^ testActive env) $ do
+        testStep env
+        testLoop (decrement n) env
 
 data TestParams = TestParams
 
 data Spec = Spec
 
 -- | Perform one test step.
-testStep :: WorldConnection c => TestEnv c b r -> IOC ()
-testStep (TestEnv c b r p h) = do
+testStep :: WorldConnection c => TestEnv c b r -> IO ()
+testStep TestEnv{connection, bookkeeper, reporter, params} = do
     ioAct <- liftIO $
-        generateInput b p `race` waitForOutput c p
-    res <- step b (either id id ioAct)
+        generateInput bookkeeper params
+        `race`
+        waitForOutput connection params
+    res <- step bookkeeper (either id id ioAct)
     case res of
         NoConclusion ->
             case ioAct of
-                Left Quiescence -> report r ObservedQuiescence
-                Left act -> report r (ObservedInput act)
-                Right act -> report r (ObservedOutput act)                
-        Pass -> report r (Result Pass)
-        Fail -> report r (Result Fail)
+                Left Quiescence -> report reporter ObservedQuiescence
+                Left act -> report reporter (ObservedInput act)
+                Right act -> report reporter (ObservedOutput act)                
+        Pass -> report reporter (Result Pass)
+        Fail -> report reporter (Result Fail)
 
     
 -- | Generate an input action based on the given specification and test
@@ -185,10 +206,13 @@ waitForOutput :: (WorldConnection c)
               => c -> TestParams -> IO Action
 waitForOutput = undefined
 
+suspendTest :: TestEnv c b r -> IO ()
+suspendTest TestEnv {active} = atomically $ writeTVar active False
+
+
 -- | Stop the test. Pending test steps are interrupted.
-stopTest :: TestEnv c b r -> IOC ()
-stopTest (TestEnv _ _ _ _ h) = doStop h -- Send a stop command to the test
+stopTest :: TesterHandle c b r -> IO ()
+stopTest TesterHandle {} = undefined  -- Terminate c, b, and r. Perform the cleanup here.
     
 -- | Resume the test.
-resumeTest :: TestEnv c b r -> IOC ()
 resumeTest = undefined

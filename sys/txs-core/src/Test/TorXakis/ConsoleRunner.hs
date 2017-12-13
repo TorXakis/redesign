@@ -11,13 +11,13 @@ import Test.TorXakis.Specification
 
 -- | Run a test up to its completion.
 runTest :: (WorldConnection c, Bookkeeper b, Reporter r)
-        => c -> b -> r -> TxsSpec -> IOC ()
+        => c -> b -> r -> TxsSpec -> IO ()
 runTest c b r spec = do
-    tEnv <- initTest c b r spec
-    test All tEnv
-    let testOutput = output (testReporter tEnv)
+    th <- initTest c b r spec
+    let env = testEnv th
+    test All env
+    let testOutput = output (reporter env)
     runEffect $ for (every testOutput) (liftIO . print) -- TODO: you can
                                                         -- abstract this away
                                                         -- into some action of
                                                         -- the tester.
-    return ()
