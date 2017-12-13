@@ -14,71 +14,103 @@
 module Test.TorXakis.Core where
 
 -- Standard library imports
-import Data.Map (Map)
-import Data.Text (Text)
 import Control.Monad.IO.Class
 import Control.Concurrent.Async
-import Control.Applicative ((<|>))
-import Data.Maybe
-    
+import Control.Monad.Extra
+
 -- Related third party imports
 import Pipes hiding (next)
     
 -- Local application/library specific imports
-
--- | Behavior expressions.
-data BExpr
-
--- | Model definitions.
-data ModelDef
-
--- | Process definitions.
-newtype ProcDef = ProcDef BExpr
-
--- | Complete TorXakis specifications.
-data TxsSpec = TxsSpec
-    { procDefs :: !(Map (Id ProcDef) ProcDef)
-    , modelDefs :: !(Map (Id ModelDef) ModelDef)
-    }
-
--- | Identifiers for parts of the TorXakis specifications.
-newtype Id v = Id { getId :: Int }
-
--- | Actions
-newtype Action = Action { actionName :: Text } deriving (Show)
-
--- | Test action: actions observed during tests.
-data TestAction = Quiescence    -- ^ Quiescence was observed.
-                | Output Action -- ^ An output action was observed.
-                | Input Action  -- ^ An input action was sent to the SUT.
-
+import Test.TorXakis.Specification
+    
 -- | Connection to the external world.
 class WorldConnection c where
     -- | Start the external world. It might include the starting the SUT.
-    start :: c -> IOC ()
-    -- | Receive an action from the external world.
+    initConnection :: c -> IOC ()
+
+    -- | Receive an action from the external world. This action is blocking.
     fromWorld :: c -> IOC Action
+
     -- | Send an action to the external world.
     toWorld :: c -> Action -> IOC ()
+
     -- | Stop the external world.
     stop :: c -> IOC ()
+
+-- | Reports the actions that occur during testing.
+class Reporter r where
+    -- | Initialize the reporter
+    initReporter :: IOC r
+
+    -- | Report an action.
+    report :: r -> Observation -> IOC ()
+
+    -- ^ Stream of test output.
+    output :: r -> ListT IOC Observation
+
+-- | Output that can be observed from in the testing process.
+data Observation
+    = Result Verdict
+    | ObservedInput Action
+    | ObservedOutput Action
+    | ObservedQuiescence
+    deriving (Show)
+
+-- | Keeps track of the current state of the specification.
+class Bookkeeper b where
+    -- | Initialize the bookkeeper.
+    initBookeeper :: TxsSpec -> IOC b
+    
+    -- | Returns the next action according to the specification.
+    nextAction :: b -> IOC Action
+
+    -- | Performs the given action, updating the specification accordingly.
+    -- 
+    -- The returned value is True iff the current action is allowed in the
+    -- specification.
+    --
+    step :: b -> Action -> IOC Verdict
+
+data Verdict
+    = Pass
+    | Fail
+    | NoConclusion -- ^ No conclusion was reached, the test must proceed to
+                   -- have a verdict.
+    deriving (Show)
 
 -- | Core monad.
 newtype IOC a = IOC { runIOC :: IO a }
     deriving (Functor, Applicative, Monad, MonadIO)
 
-initTest :: WorldConnection c => c -> TxsSpec -> IOC (TestEnv c)
-initTest c spec = IOC (return $ TestEnv c spec)
+initTest :: (WorldConnection c, Bookkeeper b, Reporter r)
+         => c -> b -> r -> TxsSpec -> IOC (TestEnv c b r )
+-- TODO: you might need to initialize the data structures here.
+initTest c b r spec = IOC (return $ TestEnv c b r TestParams TesterHandle)
 
 -- | Test environment.
 --
 -- NOTE: by using different kind of environments we remove the need for making
 -- a case analysis of in which state the TorXakis core is.
-data TestEnv c where
-    TestEnv :: WorldConnection c => c -> TxsSpec -> TestEnv c
+data TestEnv c b r where
+    TestEnv :: (WorldConnection c, Bookkeeper b, Reporter r)
+        => c -> b -> r -> TestParams -> TesterHandle -> TestEnv c b r 
 
-testConn :: TestEnv c -> c
-testConn (TestEnv c _ ) = c
+data TesterHandle = TesterHandle
+
+doTest :: TesterHandle -> StepsNumber -> IOC ()
+doTest = undefined
+
+doStop :: TesterHandle -> IOC ()
+doStop = undefined
+
+testConn :: TestEnv c b r -> c
+testConn (TestEnv c _ _ _ _) = c
+
+testReporter :: TestEnv c b r -> r
+testReporter (TestEnv _ _ r _ _) = r
+
+-- | A handle to a running test. 
 
 -- | Stepper environment.
 --
@@ -93,22 +125,45 @@ initStep = undefined
 data StepsNumber = All | Do Int
 
 -- | Start testing: test case generation + conformance checking.
-test :: StepsNumber -> TestEnv c -> IOC TestHandle
-test All env = do
-    let conn = testConn env
-    undefined
-test _ _ = undefined
+test :: StepsNumber -> TestEnv c b r -> IOC ()
+test n (TestEnv _ _ _ _ h) =
+    doTest h n  -- This will queue the command using the handler.
+
+-- | Was a verdict already reached?
+testDone :: TestEnv c b r -> IOC Bool
+testDone = undefined
+
+-- | Is the test still active (not suspended?).
+testActive :: TestEnv c b r -> IOC Bool
+testActive = undefined
+    
+-- Test look will be called by the main tester loop
+testLoop :: WorldConnection c
+         => StepsNumber -> TestEnv c b r -> IOC ()    
+testLoop All env = do
+    done <- testDone env -- The testing process is finished.
+    whenM (testActive env) (testStep env >> test All env)
+testLoop _ _ = undefined
 
 data TestParams = TestParams
 
 data Spec = Spec
 
 -- | Perform one test step.
-testStep :: WorldConnection c => TestParams -> Spec -> c -> IOC Spec
-testStep params spec conn = do
-    act <- liftIO $ runConcurrently $
-        generateInput params conn spec <|> waitForOutput params spec conn
-    next act spec
+testStep :: WorldConnection c => TestEnv c b r -> IOC ()
+testStep (TestEnv c b r p h) = do
+    ioAct <- liftIO $
+        generateInput b p `race` waitForOutput c p
+    res <- step b (either id id ioAct)
+    case res of
+        NoConclusion ->
+            case ioAct of
+                Left Quiescence -> report r ObservedQuiescence
+                Left act -> report r (ObservedInput act)
+                Right act -> report r (ObservedOutput act)                
+        Pass -> report r (Result Pass)
+        Fail -> report r (Result Fail)
+
     
 -- | Generate an input action based on the given specification and test
 -- parameters.
@@ -120,41 +175,20 @@ testStep params spec conn = do
 -- After waiting for the SUT timeout in the current state (given by the @Spec@
 -- parameter).
 --
-generateInput :: WorldConnection c => TestParams -> c -> Spec -> Concurrently TestAction
-generateInput params c spec = undefined
+generateInput :: (Bookkeeper b)
+              => b -> TestParams -> IO Action
+generateInput b params = undefined
 
 -- | Waits for output indefinitely, if no output comes this function won't
 -- return.
-waitForOutput :: WorldConnection c => TestParams -> Spec -> c -> Concurrently TestAction
-waitForOutput = waitForOutput
-
--- | Update the spec to account for the fact that the given action took place.
-next :: TestAction -> Spec -> IOC Spec
-next = undefined
+waitForOutput :: (WorldConnection c)
+              => c -> TestParams -> IO Action
+waitForOutput = undefined
 
 -- | Stop the test. Pending test steps are interrupted.
-stopTest :: TestHandle -> IOC ()
-stopTest = undefined
-
+stopTest :: TestEnv c b r -> IOC ()
+stopTest (TestEnv _ _ _ _ h) = doStop h -- Send a stop command to the test
+    
 -- | Resume the test.
-resumeTest :: TestHandle -> IOC ()
+resumeTest :: TestEnv c b r -> IOC ()
 resumeTest = undefined
-
-step :: StepEnv  -> IOC StepHandle
-step = undefined
-
--- | A test handle contains:
---
--- - Current TorXakis specification being tested.
--- - A channel where the output is directed.
---
-data TestHandle = TestHandle
-    { output :: ListT IOC TestOutput -- ^ Stream of test output.
-    }
-
--- | Output that can be observed from in the testing process.
-data TestOutput = Pass | Fail | FromWorld Action | ToWorld Action
-    deriving Show
-
--- | Similar to a test handle.
-data StepHandle
