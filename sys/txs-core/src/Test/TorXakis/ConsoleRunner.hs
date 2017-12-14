@@ -30,7 +30,6 @@ mkSeqChecker xs = atomically $ do
     passTV <- newTVar True -- No input action is seen at the beginning. The test is passing so far.
     return $ SeqChecker expsTQ passTV
 
-
 -- An example...
 mSeqCheck = mkSeqChecker [Action "Foo", Action "Bar", Action "Baz"]
 
@@ -72,7 +71,65 @@ instance WorldConnection SeqChecker where
             writeTVar passing (act == expAct)
 
     stop = const $ return ()        
-        
+
+-- | A specification as a sequence of expected actions.
+data SeqSpec = SeqSpec
+    { specTQ :: TQueue Action
+    , verdTV :: TVar Verdict
+    }
+
+mkSeqSpec :: [Action] -> IO SeqSpec
+mkSeqSpec xs = atomically $ do
+    specTQ <- newTQueue
+    traverse_ (writeTQueue specTQ) xs
+    verdTV <- newTVar NoConclusion
+    return $ SeqSpec specTQ verdTV
+
+instance Bookkeeper SeqSpec where
+    initBookeeper _ _ = return ()
+
+    step SeqSpec{specTQ, verdTV} act = atomically $ do
+        checkFail `orElse` checkEmpty `orElse` checkAct
+        where
+          checkFail = do
+              verd <- readTVar verdTV
+              if verd == Fail || verd == Pass -- A verdict was reached, no action is expected
+                  then return Fail
+                  else retry
+
+          checkEmpty =
+              ifM (isEmptyTQueue specTQ)
+                  reportFail
+                  retry    
+
+          checkAct = do
+              nextAct <- readTQueue specTQ
+              if nextAct /= act
+                  then reportFail
+                  else ifM (isEmptyTQueue specTQ)
+                           reportPass
+                           (return NoConclusion)
+          
+          reportFail = writeTVar verdTV Fail >> return Fail
+
+          reportPass = writeTVar verdTV Fail >> return Pass
+
+    nextInputAction spec@SeqSpec{specTQ} = atomically $ do
+        mNextAct <- tryPeekTQueue specTQ
+        case mNextAct of
+            Nothing -> return Nothing
+            Just act -> if actionType spec act == Input
+                        then return (Just act)
+                        else return Nothing
+
+    actionType _ (Action "OK") = Output
+    actionType _ (Action "NOK") = Output
+    actionType _ Quiescence = Output
+    actionType _ (Action _) = Input
+
+    verdict SeqSpec{verdTV} = atomically $ readTVar verdTV
+
+    
 -- | Run a test up to its completion.
 runTest :: (WorldConnection c, Bookkeeper b, Reporter r)
         => c -> b -> r -> TxsSpec -> IO ()

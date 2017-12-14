@@ -33,4 +33,4 @@ data Action = Action { actionName :: Text }
     
 
 -- | Type of an action.
-data ActionType = Input | Output
+data ActionType = Input | Output deriving (Show, Eq)

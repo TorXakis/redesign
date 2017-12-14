@@ -68,8 +68,6 @@ hasVerdict :: Observation -> Bool
 hasVerdict (Result _) = True
 hasVerdict _ = False
 
-
-
 -- | Transform an action to and observation.
 actToObservation :: ActionType -> Action -> Observation
 actToObservation Input = ObservedInput
@@ -78,7 +76,9 @@ actToObservation Output = ObservedOutput
 -- | Keeps track of the current state of the specification.
 class Bookkeeper b where -- TODO: maybe Bookkeeper needs to be renamed to Spec.
     -- | Initialize the bookkeeper.
-    initBookeeper :: b -> TxsSpec -> IO ()
+    initBookeeper :: b -> TxsSpec -> IO () -- TODO: we might even abstract away
+                                           -- from the TxsSpec (and rename
+                                           -- "Bookkeeper" to "Specification"!)
     
     -- | Performs the given action, updating the specification accordingly.
     -- 
