@@ -1,21 +1,17 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
-module Test.TorXakis.ConsoleRunner where
+module Test.TorXakis.Examples.ConsoleRunner where
 
 -- Standard library imports
 import Control.Concurrent.STM
 import Control.Monad.Extra
 import Data.Foldable
 
---TODO: remove
-import Control.Concurrent.Async
-
 -- Related third party imports
 import Pipes
 
 -- Local application/library specific imports
-import Test.TorXakis.Core
-import Test.TorXakis.Specification
+import Test.TorXakis
 
 -- | Simple world connection that has a list of expected input actions. For
 -- each action that arrives in the expected order, an action "OK" is returned.
@@ -37,10 +33,10 @@ mkSeqChecker xs = atomically $ do
     retuTV <- newTVar False -- An input action is expected, so 
     return $ SeqChecker expsTQ passTV retuTV
 
-instance WorldConnection SeqChecker where
-    initConnection = const $ return ()
+instance SUTConnection SeqChecker where
+    startSUT = const $ return ()
 
-    fromWorld SeqChecker{passing, returnOutput} = 
+    fromSUT SeqChecker{passing, returnOutput} = 
         ifM (readTVarIO returnOutput) sendOutput waitForever
         where 
           sendOutput = atomically $ do
@@ -49,16 +45,16 @@ instance WorldConnection SeqChecker where
                   (return (Action "OK"))
                   (return (Action "NOK"))
 
-    toWorld SeqChecker{expectations, passing, returnOutput} act = atomically $
+    toSUT SeqChecker{expectations, passing, returnOutput} act = atomically $
         whenM (readTVar passing) $ do
         -- Match the received action to the expectations.
             expAct <- readTQueue expectations
             writeTVar passing (act == expAct)
-            writeTVar returnOutput True -- We're ready to return an output next time `fromWorld` is called.
+            writeTVar returnOutput True -- We're ready to return an output next time `fromSUT` is called.
 
-    stop = const $ return ()        
+    stopSUT = const $ return ()        
 
-data SimpleReporter = SimpleReporter
+newtype SimpleReporter = SimpleReporter
     {observed :: TChan Observation}
 
 mkSimpleReporter :: IO SimpleReporter
@@ -95,10 +91,8 @@ mkSeqSpec xs = atomically $ do
     verdTV <- newTVar NoConclusion
     return $ SeqSpec specTQ verdTV
 
-instance Bookkeeper SeqSpec where
-    initBookeeper _ _ = return ()
-
-    step SeqSpec{specTQ, verdTV} act = atomically $ do
+instance Specification SeqSpec where
+    step SeqSpec{specTQ, verdTV} act = atomically $
         checkFail `orElse` checkEmpty `orElse` checkAct
         where
           checkFail = do
@@ -140,10 +134,10 @@ instance Bookkeeper SeqSpec where
     verdict SeqSpec{verdTV} = atomically $ readTVar verdTV
 
 -- | Run a test up to its completion.
-runTest :: (WorldConnection c, Bookkeeper b, Reporter r)
-        => c -> b -> r -> TxsSpec -> IO ()
-runTest c b r spec = do
-    th <- initTest c b r (TestParams 2000) spec
+runTest :: (SUTConnection c, Specification b, Reporter r)
+        => c -> b -> r -> IO ()
+runTest c b r = do
+    th <- initTester c b r (TestParams 2000)
     let env = testEnv th
     test All env
     let testOutput = output (reporter env)
@@ -159,19 +153,4 @@ test0 = do
     conn <- mkSeqChecker [Action "Foo", Action "Bar", Action "Baz"]
     spec <- mkSeqSpec [Action "Foo", Action "OK", Action "Bar", Action "OK", Action "Baz", Action "OK"]
     rept <- mkSimpleReporter
-    runTest conn spec rept undefined
-
-
-test1 :: IO ()
-test1 = do
-    tv <- newTVarIO "Hello"
-    a <- async $ reader tv 3
-    xs <- wait a
-    putStrLn $ "I got this list" ++ show xs
-    where
-      reader tv n = go tv n []
-      go _ 0 xs = return xs
-      go tv n xs = do
-          res <- readTVarIO tv
-          go tv (n - 1) (res:xs)
-    
+    runTest conn spec rept

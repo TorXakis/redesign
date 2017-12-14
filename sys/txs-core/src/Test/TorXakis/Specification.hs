@@ -1,36 +1,27 @@
-module Test.TorXakis.Specification where
--- TODO: define the export list.
+module Test.TorXakis.Specification
+    ( Specification (..)
+    ) where
 
 -- Standard library imports
-import Data.Map (Map)
-import Data.Text (Text)
 
--- | Behavior expressions.
-data BExpr
+-- Local application/library specific imports
+import Test.TorXakis.Action
+import Test.TorXakis.Verdict
 
--- | Model definitions.
-data ModelDef
+-- | Keeps track of the current state of the specification.
+class Specification b where
+    -- | Performs the given action, updating the specification accordingly.
+    -- 
+    -- The returned value is True iff the current action is allowed in the
+    -- specification.
+    --
+    step :: b -> Action -> IO Verdict
 
--- | Process definitions.
-newtype ProcDef = ProcDef BExpr
+    -- | Get a next input action if possible. Return Nothing if no input action
+    -- is enabled.
+    nextInputAction :: b -> IO (Maybe Action) -- TODO: Do we need IO at all?
 
--- | Complete TorXakis specifications.
-data TxsSpec = TxsSpec
-    { procDefs :: !(Map (Id ProcDef) ProcDef)
-    , modelDefs :: !(Map (Id ModelDef) ModelDef)
-    }
+    -- | Is the specification in a @pass@ or @fail@ state?
+    verdict :: b -> IO Verdict -- TODO: again: is IO needed?
 
--- | Identifiers for parts of the TorXakis specifications.
-newtype Id v = Id { getId :: Int }
-
--- | Actions
---
--- TODO: maybe we need an `Action a` type here, to abstract over the type of
--- actions.
-data Action = Action { actionName :: Text }
-            | Quiescence
-    deriving (Show, Eq)
-    
-
--- | Type of an action.
-data ActionType = Input | Output deriving (Show, Eq)
+    actionType :: b -> Action -> ActionType
