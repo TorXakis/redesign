@@ -55,7 +55,7 @@ class Reporter r where
     report :: r -> Observation -> IO ()
 
     -- | Stream of test output.
-    output :: r -> ListT IO Observation
+    output :: r -> Producer Observation IO ()
 
 -- | Output that can be observed from in the testing process.
 data Observation
@@ -63,6 +63,12 @@ data Observation
     | ObservedInput Action
     | ObservedOutput Action -- ^ Quiescence is also considered an output.
     deriving (Show)
+
+hasVerdict :: Observation -> Bool
+hasVerdict (Result _) = True
+hasVerdict _ = False
+
+
 
 -- | Transform an action to and observation.
 actToObservation :: ActionType -> Action -> Observation

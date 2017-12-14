@@ -20,7 +20,7 @@ import Test.TorXakis.Specification
 -- world connection will keep on repeating that output.
 data SeqChecker = SeqChecker 
     { expectations :: TQueue Action -- ^ Sequence of expected input actions.
-    , passing :: TVar (Bool)        -- ^ Is the test passing so far?
+    , passing :: TVar Bool          -- ^ Is the test passing so far?
     }
 
 mkSeqChecker :: [Action] -> IO SeqChecker
@@ -29,6 +29,33 @@ mkSeqChecker xs = atomically $ do
     traverse_ (writeTQueue expsTQ) xs
     passTV <- newTVar True -- No input action is seen at the beginning. The test is passing so far.
     return $ SeqChecker expsTQ passTV
+
+
+-- An example...
+mSeqCheck = mkSeqChecker [Action "Foo", Action "Bar", Action "Baz"]
+
+data SimpleReporter = SimpleReporter
+    {observed :: TChan Observation}
+
+mkSimpleReporter :: IO SimpleReporter
+mkSimpleReporter = do
+    obsTC <- newTChanIO
+    return $ SimpleReporter obsTC
+
+instance Reporter SimpleReporter where
+    initReporter = const $ return ()    
+
+    report SimpleReporter{observed} = atomically . writeTChan observed
+
+    output SimpleReporter{observed} = do
+        observedDup <- lift $ atomically $ dupTChan observed
+        loop observedDup
+        where
+          loop :: TChan Observation -> Producer Observation IO ()
+          loop tchan = do
+            obs <- lift $ atomically $ readTChan tchan
+            yield obs
+            unless (hasVerdict obs) (loop tchan)
 
 instance WorldConnection SeqChecker where
     initConnection = const $ return ()
@@ -50,11 +77,11 @@ instance WorldConnection SeqChecker where
 runTest :: (WorldConnection c, Bookkeeper b, Reporter r)
         => c -> b -> r -> TxsSpec -> IO ()
 runTest c b r spec = do
-    th <- initTest c b r (TestParams 2000)spec
+    th <- initTest c b r (TestParams 2000) spec
     let env = testEnv th
     test All env
     let testOutput = output (reporter env)
-    runEffect $ for (every testOutput) (liftIO . print) -- TODO: you can
-                                                        -- abstract this away
-                                                        -- into some action of
-                                                        -- the tester.
+    runEffect $ for testOutput (liftIO . print) -- TODO: you can
+                                                -- abstract this away
+                                                -- into some action of
+                                                -- the tester.
