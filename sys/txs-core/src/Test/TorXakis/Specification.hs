@@ -1,4 +1,5 @@
 module Test.TorXakis.Specification where
+-- TODO: define the export list.
 
 -- Standard library imports
 import Data.Map (Map)
@@ -23,8 +24,13 @@ data TxsSpec = TxsSpec
 newtype Id v = Id { getId :: Int }
 
 -- | Actions
+--
+-- TODO: maybe we need an `Action a` type here, to abstract over the type of
+-- actions.
 data Action = Action { actionName :: Text }
             | Quiescence
-    deriving (Show)
+    deriving (Show, Eq)
     
 
+-- | Type of an action.
+data ActionType = Input | Output

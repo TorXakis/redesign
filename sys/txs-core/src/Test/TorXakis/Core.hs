@@ -14,11 +14,17 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 module Test.TorXakis.Core where
 
+-- TODO: distribute the functionality into different modules, if appropriate.
+-- TODO: hide the irrelevant parts.
+
 -- Standard library imports
 import Control.Monad.IO.Class
 import Control.Concurrent.Async
 import Control.Monad.Extra
 import Control.Concurrent.STM
+import Control.Applicative ((<|>))
+import Control.Concurrent
+import System.Random
     
 -- Related third party imports
 import Pipes hiding (next)
@@ -48,25 +54,26 @@ class Reporter r where
     -- | Report an action.
     report :: r -> Observation -> IO ()
 
-    -- ^ Stream of test output.
+    -- | Stream of test output.
     output :: r -> ListT IO Observation
 
 -- | Output that can be observed from in the testing process.
 data Observation
     = Result Verdict
     | ObservedInput Action
-    | ObservedOutput Action
-    | ObservedQuiescence
+    | ObservedOutput Action -- ^ Quiescence is also considered an output.
     deriving (Show)
 
+-- | Transform an action to and observation.
+actToObservation :: ActionType -> Action -> Observation
+actToObservation Input = ObservedInput
+actToObservation Output = ObservedOutput
+
 -- | Keeps track of the current state of the specification.
-class Bookkeeper b where
+class Bookkeeper b where -- TODO: maybe Bookkeeper needs to be renamed to Spec.
     -- | Initialize the bookkeeper.
     initBookeeper :: b -> TxsSpec -> IO ()
     
-    -- | Returns the next action according to the specification.
-    nextAction :: b -> IO Action
-
     -- | Performs the given action, updating the specification accordingly.
     -- 
     -- The returned value is True iff the current action is allowed in the
@@ -74,24 +81,32 @@ class Bookkeeper b where
     --
     step :: b -> Action -> IO Verdict
 
+    -- | Get a next input action if possible. Return Nothing if no input action
+    -- is enabled.
+    nextInputAction :: b -> IO (Maybe Action) -- TODO: Do we need IO at all?
+
+    -- | Is the specification in a @pass@ or @fail@ state?
+    verdict :: b -> IO Verdict -- TODO: again: is IO needed?
+
+    actionType :: b -> Action -> ActionType
+
 data Verdict
     = Pass
     | Fail
     | NoConclusion -- ^ No conclusion was reached, the test must proceed to
                    -- have a verdict.
-    deriving (Show)
+    deriving (Show, Eq)
 
 initTest :: (WorldConnection c, Bookkeeper b, Reporter r)
-         => c -> b -> r -> TxsSpec -> IO (TesterHandle c b r)
--- TODO: you might need to initialize the data structures here.
-initTest c b r spec = do
+         => c -> b -> r -> TestParams -> TxsSpec -> IO (TesterHandle c b r)
+initTest c b r params spec = do
     initConnection c
     initBookeeper b spec
     initReporter r
     -- Initially the test process is not active:
     activeTV <- newTVarIO False
     cmdsQ <- newTQueueIO
-    let env = TestEnv activeTV cmdsQ c b r TestParams
+    let env = TestEnv activeTV cmdsQ c b r params
     tProc <- async $ cmdsHandler env cmdsQ
     let handle = TesterHandle tProc env
     return handle
@@ -150,13 +165,15 @@ test sn TestEnv {cmds} = atomically $ writeTQueue cmds (CmdTest sn)
 
 -- | Was a verdict already reached?
 testDone :: TestEnv c b r -> IO Bool
-testDone = undefined
+testDone TestEnv {bookkeeper} = do
+    v <- verdict bookkeeper 
+    return $ v == Pass || v == Fail
 
 -- | Is the test still active? (active == not suspended).
 testActive :: TestEnv c b r -> IO Bool
 testActive TestEnv {active} = atomically $ readTVar active
     
--- Test look will be called by the main tester loop.
+-- | Test loop will be called by the main tester loop.
 testLoop :: WorldConnection c
          => StepsNumber -> TestEnv c b r -> IO ()
 testLoop n env = do
@@ -164,47 +181,74 @@ testLoop n env = do
         testStep env
         testLoop (decrement n) env
 
+
+newtype Milliseconds = Milliseconds { ms :: Int }
+    deriving (Show, Eq, Num, Random)
+
+
+-- | Convert the given number of milliseconds to microseconds.
+inMicroseconds :: Milliseconds -> Int
+inMicroseconds = (* 100) . ms
+
 data TestParams = TestParams
+    { sutTimeout :: Milliseconds -- ^ Time to wait before deciding that
+                                 -- the SUT is quiescent.
+    }
 
 data Spec = Spec
 
 -- | Perform one test step.
 testStep :: WorldConnection c => TestEnv c b r -> IO ()
 testStep TestEnv{connection, bookkeeper, reporter, params} = do
-    ioAct <- liftIO $
-        generateInput bookkeeper params
-        `race`
+    act <- liftIO $ runConcurrently $
+        generateInput connection bookkeeper params
+        <|>
         waitForOutput connection params
-    res <- step bookkeeper (either id id ioAct)
-    case res of
-        NoConclusion ->
-            case ioAct of
-                Left Quiescence -> report reporter ObservedQuiescence
-                Left act -> report reporter (ObservedInput act)
-                Right act -> report reporter (ObservedOutput act)                
-        Pass -> report reporter (Result Pass)
-        Fail -> report reporter (Result Fail)
-
+        <|>
+        generateQuiescence (sutTimeout params)
+    let t = actionType bookkeeper act
+    report reporter (actToObservation t act)
+    res <- step bookkeeper act
+    report reporter (Result res) -- The no verdict is also reported, it is up
+                                 -- to the reporter to decide whether to ignore
+                                 -- this.
     
--- | Generate an input action based on the given specification and test
--- parameters.
---
--- The test parameters determine how much time to wait before yielding an
--- input action (if any).
+-- | Generate an input action based on the given specification.
 --
 -- If no input action is possible then the @Quiescence@ action is returned.
 -- After waiting for the SUT timeout in the current state (given by the @Spec@
 -- parameter).
 --
-generateInput :: (Bookkeeper b)
-              => b -> TestParams -> IO Action
-generateInput b params = undefined
-
+generateInput :: (WorldConnection c, Bookkeeper b)
+              => c -> b -> TestParams -> Concurrently Action
+generateInput c b params = Concurrently $ do
+    mAct <- nextInputAction b
+    case mAct of
+        Nothing -> waitForever
+        Just act -> do
+            -- Wait a random time before yielding an the action.
+            -- The time to wait is in the range [0, sutTimeout params).
+            wMs <- randomRIO (0, sutTimeout params)
+            threadDelay (inMicroseconds wMs)
+            toWorld c act
+            return act
+            
+waitForever :: IO a
+waitForever = do
+    _ <- forever (threadDelay maxBound)
+    undefined
+            
 -- | Waits for output indefinitely, if no output comes this function won't
 -- return.
 waitForOutput :: (WorldConnection c)
-              => c -> TestParams -> IO Action
-waitForOutput = undefined
+              => c -> TestParams -> Concurrently Action
+waitForOutput conn _ = Concurrently $ fromWorld conn
+
+-- | Generate a @Quiescence@ action after the given timeout.
+generateQuiescence :: Milliseconds -> Concurrently Action
+generateQuiescence ms = Concurrently $ do
+    threadDelay (inMicroseconds ms)
+    return Quiescence
 
 suspendTest :: TestEnv c b r -> IO ()
 suspendTest TestEnv {active} = atomically $ writeTVar active False
