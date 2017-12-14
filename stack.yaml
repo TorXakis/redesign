@@ -6,7 +6,8 @@ resolver: lts-9.17
 
 # User packages to be built.
 packages:
-- location: sys/sort
+# - location: sys/sort
+- location: sys/txs-core  
 
 # Dependency packages to be pulled from upstream that are not in the resolver
 extra-deps:
