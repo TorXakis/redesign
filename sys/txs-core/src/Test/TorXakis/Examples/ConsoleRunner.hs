@@ -146,11 +146,22 @@ runTest c b r = do
                                                 -- into some action of
                                                 -- the tester.
 
--- | A simple test for the tester.
--- An example...
-test0 :: IO ()
-test0 = do
+-- | A simple passing test for the tester.
+--
+simplePassingTest :: IO ()
+simplePassingTest = do
     conn <- mkSeqChecker [Action "Foo", Action "Bar", Action "Baz"]
     spec <- mkSeqSpec [Action "Foo", Action "OK", Action "Bar", Action "OK", Action "Baz", Action "OK"]
     rept <- mkSimpleReporter
     runTest conn spec rept
+
+
+-- | A simple failing test for the tester.
+--
+simpleFailingTest :: IO ()
+simpleFailingTest = do
+    conn <- mkSeqChecker [Action "Foo", Action "Bar", Action "Baz"]
+    spec <- mkSeqSpec [Action "Foo", Action "OK", Action "XXXX", Action "OK"]
+    rept <- mkSimpleReporter
+    runTest conn spec rept
+

@@ -17,6 +17,7 @@ module Test.TorXakis.Tester
       initTester
     , test
     -- * Testing process parameters
+    , testerProc
     , testEnv
     , reporter
     , StepsNumber(..)
