@@ -16,6 +16,7 @@ module Test.TorXakis.Tester
     ( -- * Test actions
       initTester
     , test
+    , suspendTest
     -- * Testing process parameters
     , testerProc
     , testEnv

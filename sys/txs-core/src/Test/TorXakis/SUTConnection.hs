@@ -2,7 +2,11 @@ module Test.TorXakis.SUTConnection
     ( SUTConnection (..)
     )where
 
+-- Third party imports
+
+-- Local application/library specific imports
 import Test.TorXakis.Action
+
 
 -- | Connection to the SUT.
 class SUTConnection c where

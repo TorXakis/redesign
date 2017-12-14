@@ -4,6 +4,8 @@ module Test.TorXakis.Action
     ) where
 
 import Data.Text (Text)
+import qualified Data.Text as T
+import Data.String
 
 -- | Actions
 --
@@ -11,7 +13,14 @@ import Data.Text (Text)
 -- actions.
 data Action = Action { actionName :: Text }
             | Quiescence
-    deriving (Show, Eq)
+    deriving (Eq)
+
+instance Show Action where
+    show (Action name) = show name
+    show Quiescence = "Quiescence"
+
+instance IsString Action where
+    fromString = Action . T.pack -- Yes, yes, for now we could have Action "Quiescence". 
 
 -- | Type of an action.
 data ActionType = Input | Output deriving (Show, Eq)

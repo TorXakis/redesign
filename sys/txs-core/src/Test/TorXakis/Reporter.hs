@@ -3,9 +3,10 @@ module Test.TorXakis.Reporter
     , Observation (..)
     , hasVerdict
     , actToObservation
+    , withObservations
     )where
 
--- Related third party imports
+-- Third party imports
 import Pipes
 
 -- Local application/library specific imports
@@ -39,3 +40,9 @@ hasVerdict _ = False
 actToObservation :: ActionType -> Action -> Observation
 actToObservation Input = ObservedInput
 actToObservation Output = ObservedOutput
+
+-- | Run the given action on each observation. Notice calling executing the
+-- resulting IO action will block till all output is consumed. To achieve a
+-- non-blocking implementation use the @output@ stream.
+withObservations :: Reporter r => r -> (Observation -> IO ()) -> IO ()
+withObservations r io = runEffect $ for (output r) (liftIO . io) 

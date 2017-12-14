@@ -2,7 +2,7 @@ module Test.TorXakis.Specification
     ( Specification (..)
     ) where
 
--- Standard library imports
+-- Third party imports
 
 -- Local application/library specific imports
 import Test.TorXakis.Action

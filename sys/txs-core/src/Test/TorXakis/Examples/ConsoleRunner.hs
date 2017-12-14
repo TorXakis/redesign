@@ -6,6 +6,7 @@ module Test.TorXakis.Examples.ConsoleRunner where
 import Control.Concurrent.STM
 import Control.Monad.Extra
 import Data.Foldable
+import System.Console.ANSI
 
 -- Related third party imports
 import Pipes
@@ -140,18 +141,36 @@ runTest c b r = do
     th <- initTester c b r (TestParams 2000)
     let env = testEnv th
     test All env
-    let testOutput = output (reporter env)
-    runEffect $ for testOutput (liftIO . print) -- TODO: you can
-                                                -- abstract this away
-                                                -- into some action of
-                                                -- the tester.
+    withObservations r showObservation
+    where
+      showObservation (Result Pass) =
+          "Pass" `printInColor` Green
+
+      showObservation (Result Fail) =
+          "Fail" `printInColor` Red
+
+      showObservation (ObservedInput x) =
+          ("? " ++ show x) `printInColor` Magenta
+
+      showObservation (ObservedOutput x) =
+          ("! " ++ show x ) `printInColor` Blue
+
+      showObservation (Result NoConclusion) =
+          "..." `printInColor` Yellow
+          
+      printInColor text color = do
+          setSGR [ SetConsoleIntensity BoldIntensity
+                 , SetColor Foreground Vivid color
+                 ]
+          putStrLn text
+          setSGR [Reset]
 
 -- | A simple passing test for the tester.
 --
 simplePassingTest :: IO ()
 simplePassingTest = do
-    conn <- mkSeqChecker [Action "Foo", Action "Bar", Action "Baz"]
-    spec <- mkSeqSpec [Action "Foo", Action "OK", Action "Bar", Action "OK", Action "Baz", Action "OK"]
+    conn <- mkSeqChecker ["Foo", "Bar", "Baz"]
+    spec <- mkSeqSpec ["Foo", "OK", "Bar", "OK", "Baz", "OK"]
     rept <- mkSimpleReporter
     runTest conn spec rept
 
