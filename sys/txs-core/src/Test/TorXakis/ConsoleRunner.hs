@@ -7,6 +7,9 @@ import Control.Concurrent.STM
 import Control.Monad.Extra
 import Data.Foldable
 
+--TODO: remove
+import Control.Concurrent.Async
+
 -- Related third party imports
 import Pipes
 
@@ -21,6 +24,9 @@ import Test.TorXakis.Specification
 data SeqChecker = SeqChecker 
     { expectations :: TQueue Action -- ^ Sequence of expected input actions.
     , passing :: TVar Bool          -- ^ Is the test passing so far?
+    , returnOutput :: TVar Bool     -- ^ This boolean switch allows to return
+                                    -- output only if an input action was
+                                    -- seen.
     }
 
 mkSeqChecker :: [Action] -> IO SeqChecker
@@ -28,10 +34,29 @@ mkSeqChecker xs = atomically $ do
     expsTQ <- newTQueue
     traverse_ (writeTQueue expsTQ) xs
     passTV <- newTVar True -- No input action is seen at the beginning. The test is passing so far.
-    return $ SeqChecker expsTQ passTV
+    retuTV <- newTVar False -- An input action is expected, so 
+    return $ SeqChecker expsTQ passTV retuTV
 
--- An example...
-mSeqCheck = mkSeqChecker [Action "Foo", Action "Bar", Action "Baz"]
+instance WorldConnection SeqChecker where
+    initConnection = const $ return ()
+
+    fromWorld SeqChecker{passing, returnOutput} = 
+        ifM (readTVarIO returnOutput) sendOutput waitForever
+        where 
+          sendOutput = atomically $ do
+              writeTVar returnOutput False -- We need to wait for an input before this function can be called again.
+              ifM (readTVar passing)
+                  (return (Action "OK"))
+                  (return (Action "NOK"))
+
+    toWorld SeqChecker{expectations, passing, returnOutput} act = atomically $
+        whenM (readTVar passing) $ do
+        -- Match the received action to the expectations.
+            expAct <- readTQueue expectations
+            writeTVar passing (act == expAct)
+            writeTVar returnOutput True -- We're ready to return an output next time `fromWorld` is called.
+
+    stop = const $ return ()        
 
 data SimpleReporter = SimpleReporter
     {observed :: TChan Observation}
@@ -56,21 +81,6 @@ instance Reporter SimpleReporter where
             yield obs
             unless (hasVerdict obs) (loop tchan)
 
-instance WorldConnection SeqChecker where
-    initConnection = const $ return ()
-
-    fromWorld SeqChecker{passing} = atomically $
-        ifM (readTVar passing)
-            (return (Action "OK"))
-            (return (Action "NOK"))
-
-    toWorld SeqChecker{expectations, passing} act = atomically $
-        whenM (readTVar passing) $ do
-        -- Match the received action to the expectations.
-            expAct <- readTQueue expectations
-            writeTVar passing (act == expAct)
-
-    stop = const $ return ()        
 
 -- | A specification as a sequence of expected actions.
 data SeqSpec = SeqSpec
@@ -129,7 +139,6 @@ instance Bookkeeper SeqSpec where
 
     verdict SeqSpec{verdTV} = atomically $ readTVar verdTV
 
-    
 -- | Run a test up to its completion.
 runTest :: (WorldConnection c, Bookkeeper b, Reporter r)
         => c -> b -> r -> TxsSpec -> IO ()
@@ -142,3 +151,27 @@ runTest c b r spec = do
                                                 -- abstract this away
                                                 -- into some action of
                                                 -- the tester.
+
+-- | A simple test for the tester.
+-- An example...
+test0 :: IO ()
+test0 = do
+    conn <- mkSeqChecker [Action "Foo", Action "Bar", Action "Baz"]
+    spec <- mkSeqSpec [Action "Foo", Action "OK", Action "Bar", Action "OK", Action "Baz", Action "OK"]
+    rept <- mkSimpleReporter
+    runTest conn spec rept undefined
+
+
+test1 :: IO ()
+test1 = do
+    tv <- newTVarIO "Hello"
+    a <- async $ reader tv 3
+    xs <- wait a
+    putStrLn $ "I got this list" ++ show xs
+    where
+      reader tv n = go tv n []
+      go _ 0 xs = return xs
+      go tv n xs = do
+          res <- readTVarIO tv
+          go tv (n - 1) (res:xs)
+    

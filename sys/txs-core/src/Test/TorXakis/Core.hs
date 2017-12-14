@@ -18,7 +18,6 @@ module Test.TorXakis.Core where
 -- TODO: hide the irrelevant parts.
 
 -- Standard library imports
-import Control.Monad.IO.Class
 import Control.Concurrent.Async
 import Control.Monad.Extra
 import Control.Concurrent.STM
@@ -65,7 +64,8 @@ data Observation
     deriving (Show)
 
 hasVerdict :: Observation -> Bool
-hasVerdict (Result _) = True
+hasVerdict (Result Pass) = True
+hasVerdict (Result Fail) = True
 hasVerdict _ = False
 
 -- | Transform an action to and observation.
@@ -142,7 +142,7 @@ data TestEnv c b r where
                , params :: TestParams
                } -> TestEnv c b r
 
-newtype Cmd = CmdTest StepsNumber
+newtype Cmd = CmdTest StepsNumber deriving (Show)
 
 data TesterHandle c b r = TesterHandle
     { testerProc :: Async () -- ^ Tester process
@@ -159,7 +159,7 @@ newtype StepEnv = StepEnv TxsSpec
 -- initStep = 
 
 -- | Number of steps to make.
-data StepsNumber = All | Do Int
+data StepsNumber = All | Do Int deriving (Show)
 
 decrement :: StepsNumber -> StepsNumber
 decrement All = All
@@ -167,7 +167,9 @@ decrement (Do n) = Do (n - 1)
 
 -- | Start testing: test case generation + conformance checking.
 test :: StepsNumber -> TestEnv c b r -> IO ()
-test sn TestEnv {cmds} = atomically $ writeTQueue cmds (CmdTest sn)
+test sn TestEnv {active, cmds} = atomically $ do
+    writeTQueue cmds (CmdTest sn)
+    writeTVar active True
 
 -- | Was a verdict already reached?
 testDone :: TestEnv c b r -> IO Bool
@@ -177,24 +179,24 @@ testDone TestEnv {bookkeeper} = do
 
 -- | Is the test still active? (active == not suspended).
 testActive :: TestEnv c b r -> IO Bool
-testActive TestEnv {active} = atomically $ readTVar active
+testActive TestEnv {active} = readTVarIO active
     
 -- | Test loop will be called by the main tester loop.
 testLoop :: WorldConnection c
          => StepsNumber -> TestEnv c b r -> IO ()
-testLoop n env = do
-    whenM (notM (testDone env) &&^ testActive env) $ do
-        testStep env
-        testLoop (decrement n) env
-
+testLoop n env@TestEnv{active} = do
+    ifM (notM (testDone env) &&^ testActive env) 
+        (do testStep env
+            testLoop (decrement n) env
+        )
+        (atomically $ writeTVar active False)
 
 newtype Milliseconds = Milliseconds { ms :: Int }
     deriving (Show, Eq, Num, Random)
 
-
 -- | Convert the given number of milliseconds to microseconds.
 inMicroseconds :: Milliseconds -> Int
-inMicroseconds = (* 100) . ms
+inMicroseconds = (* 1000) . ms
 
 data TestParams = TestParams
     { sutTimeout :: Milliseconds -- ^ Time to wait before deciding that
@@ -206,7 +208,7 @@ data Spec = Spec
 -- | Perform one test step.
 testStep :: WorldConnection c => TestEnv c b r -> IO ()
 testStep TestEnv{connection, bookkeeper, reporter, params} = do
-    act <- liftIO $ runConcurrently $
+    act <- runConcurrently $
         generateInput connection bookkeeper params
         <|>
         waitForOutput connection params
