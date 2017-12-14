@@ -9,6 +9,9 @@ import Test.TorXakis.Action
 import Test.TorXakis.Verdict
 
 -- | Keeps track of the current state of the specification.
+--
+-- Instances of the @Specification@ class can decide the test generation
+-- algorithm to run (IOCO, UIOCO, etc).
 class Specification b where
     -- | Performs the given action, updating the specification accordingly.
     -- 
